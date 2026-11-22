@@ -167,6 +167,37 @@ The error analysis breaks predictions down by category, confusion pair, and reco
 
 ### Running the notebook and locating the output
 
+### SUBMISSION5:Notebook 4 Updated — Spectral Residual Blend
+
+This notebook classifies audio recordings into **41 sound categories** and returns the three most likely categories for each clip. It extends the previous acoustic blend by adding **spectral residuals**, which describe how each short audio window differs from its nearest learned acoustic pattern. Two recordings can contain similar patterns at similar frequencies while still differing in their spectral detail.
+
+The final model averages predictions from three components:
+
+| Component | Weight | What it captures |
+|---|---:|---|
+| Recording-level ensemble | 45.5% | Whole-clip summaries of spectral content, energy, and timing |
+| Short-window histogram SVM | 24.5% | How often learned acoustic patterns occur in each clip |
+| Spectral residual SVM | 30.0% | How short windows differ from their assigned cluster centers |
+
+The notebook fits **MiniBatch K-means** dictionaries on unchecked training audio using windows of approximately **0.1 and 0.4 seconds**. For the residual representation, it aggregates the differences between windows and their assigned cluster centers, then uses a linear-kernel SVM for classification. Verified training labels receive full weight. Unchecked labels receive lower weight, with more weight given when they agree with the recording-level model.
+
+### Results
+
+Both blends were evaluated on the same verified recordings using stratified five-fold cross-validation with three random seeds.
+
+| Validation seed | Previous acoustic blend | Spectral residual blend |
+|---|---:|---:|
+| 42 | 0.79409 | **0.80349** |
+| 2026 | 0.79785 | **0.80269** |
+| 913 | 0.80242 | **0.80833** |
+| **Mean MAP@3** | **0.79812** | **0.80484** |
+
+The spectral residual blend improved validation MAP@3 on all three splits. Its submission scored **0.80731 public MAP@3** on Kaggle, up from the previous submitted score of **0.73488**.
+
+### Output
+
+With the P4 competition dataset attached on Kaggle, the notebook writes `/kaggle/working/submission.csv` with **1,592 rows**. Each row contains a test recording ID and three distinct category codes ordered by predicted likelihood.
+
 The notebook runs on Kaggle with the P4 competition dataset attached. It reads `train.csv`, `test.csv`, `sample_submission.csv`, and the corresponding training and test WAV directories. Audio processing uses `librosa` and `soundfile`, model training uses `scikit-learn`, and `joblib` parallelizes feature extraction.
 
 The selected predictions are written to **`/kaggle/working/submission.csv`**. Model-specific outputs are stored under `/kaggle/working/model_files/`. The final audit checks that the submission contains all **1,592 test IDs** exactly once and that each prediction contains distinct, valid category codes in ranked order.
