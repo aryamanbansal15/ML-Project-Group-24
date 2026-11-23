@@ -201,3 +201,30 @@ With the P4 competition dataset attached on Kaggle, the notebook writes `/kaggle
 The notebook runs on Kaggle with the P4 competition dataset attached. It reads `train.csv`, `test.csv`, `sample_submission.csv`, and the corresponding training and test WAV directories. Audio processing uses `librosa` and `soundfile`, model training uses `scikit-learn`, and `joblib` parallelizes feature extraction.
 
 The selected predictions are written to **`/kaggle/working/submission.csv`**. Model-specific outputs are stored under `/kaggle/working/model_files/`. The final audit checks that the submission contains all **1,592 test IDs** exactly once and that each prediction contains distinct, valid category codes in ranked order.
+
+## Notebook 6 — Fisher Vector Audio Classification
+
+`notebook-6.ipynb` extends Notebook 4’s spectral residual ensemble with a **Fisher-vector SVM**. It ranks the three most likely sound categories for each recording across **41 classes** and achieved approximately **0.8495 public MAP@3** on Kaggle.
+
+### Method
+
+Notebook 4’s residual features measure how short audio windows differ from their nearest acoustic cluster. Notebook 6 uses a Gaussian mixture model so that each window can contribute to several acoustic patterns. The Fisher vector summarizes how the windows in a recording differ from those patterns in both **mean and variance**.
+
+The scaler, PCA, and Gaussian mixture model are fitted on windows from unchecked training recordings. A linear-kernel SVM learns from the resulting recording-level Fisher vectors. The final prediction blends **70% of Notebook 4’s residual ensemble** with **30% of the Fisher-vector SVM**. At inference, the notebook estimates class proportions from unlabelled test predictions and uses them to adjust the final category rankings.
+
+### Results
+
+Both ensembles were evaluated on the same verified recordings using stratified five-fold cross-validation across three seeds.
+
+| Seed | Notebook 4 MAP@3 | Notebook 6 MAP@3 |
+|---|---:|---:|
+| 42 | 0.80350 | **0.82823** |
+| 2026 | 0.80269 | **0.83226** |
+| 913 | 0.80833 | **0.83145** |
+| **Mean** | **0.80484** | **0.83065** |
+
+The Fisher-vector blend improved validation MAP@3 on every seed. On the public leaderboard, it improved from **0.80731** to approximately **0.8495**.
+
+### Output
+
+With the P4 competition dataset attached on Kaggle, the notebook writes `/kaggle/working/submission.csv` with ranked predictions for all **1,592 test recordings**.
