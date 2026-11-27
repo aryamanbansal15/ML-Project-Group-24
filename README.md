@@ -229,6 +229,42 @@ The Fisher-vector blend improved validation MAP@3 on every seed. On the public l
 
 With the P4 competition dataset attached on Kaggle, the notebook writes `/kaggle/working/submission.csv` with ranked predictions for all **1,592 test recordings**.
 
+### P4 Audio Classification — Submission Notebook 7
+Notebook 7 tests two ways to improve the ranking of sound categories in short audio recordings. The reference is Notebook 6’s Fisher-vector ensemble, which scored 0.84950 public MAP@3. The first experiment adds information about when the sound changes within a clip. The second uses acoustically similar recordings with verified labels to refine the predictions.
+
+The verified-neighbour blend was the submitted model. It scored 0.84528 public MAP@3, a decrease of 0.00422 from Notebook 6 despite improving cross-validation MAP@3 on two seeds.
+
+Data and evaluation
+The training set contains 5,604 recordings across 41 categories. Of these, 620 have verified labels and 4,984 have unchecked labels. Validation uses verified recordings, with each candidate evaluated on the same stratified five-fold splits as its reference. The submission contains predictions for 1,592 test recordings.
+
+The competition metric is Mean Average Precision at 3 (MAP@3). Each recording has one correct category. A correct prediction earns 1 point at rank one, ½ at rank two, and ⅓ at rank three. This makes the order of the three submitted labels important even when the set of predictions stays the same.
+
+Experiment 1 — Temporal Fisher vectors
+Notebook 6 pools short acoustic windows across an entire recording. That pooling can give similar representations to two clips that contain the same sounds in a different order. Notebook 7 tests whether the difference between Fisher vectors from the first and second halves captures useful information about how a recording changes over time.
+
+The candidate combined 70% of the Notebook 6 probabilities with 30% from the temporal Fisher SVM.
+
+Validation seed	Notebook 6 MAP@3	Temporal blend MAP@3	Change
+42	0.82823	0.81559	−0.01263
+2026	0.83226	0.82016	−0.01210
+913	0.83145	0.82500	−0.00645
+The temporal blend scored lower on all three seeds. The whole-recording Fisher ensemble was therefore retained as the reference for the second experiment.
+
+Experiment 2 — Verified acoustic neighbours
+The second experiment asks whether similar recordings with trusted labels can help resolve uncertain predictions. For each query recording, the model combines similarities from the spectral-residual and Fisher representations, selects the 12 nearest verified training recordings, and gives closer neighbours more weight. During validation, the neighbour pool contains only verified recordings from the training folds.
+
+The submitted blend used 85% Notebook 6 probabilities and 15% neighbour votes, followed by the existing class-prior adjustment. The paired validation results below were measured before that final adjustment.
+
+Validation seed	Notebook 6 MAP@3	Neighbour blend MAP@3	Change	Folds improved
+42	0.82823	0.84839	+0.02016	5 of 5
+913	0.83145	0.83952	+0.00806	3 of 5
+
+Submission and findings
+Notebook 7’s verified-neighbour blend scored 0.84528 public MAP@3, compared with 0.84950 for Notebook 6. The blend improved cross-validation MAP@3 in 8 of 10 folds, but that improvement did not carry over to the public test split.
+
+A likely explanation is that recordings can sound similar even when they belong to different categories. The neighbour model searched only the 620 verified clips across 41 categories. If a test recording had few close examples from its own category, recordings with a similar background or rhythm could give a competing label enough votes to move ahead. MAP@3 is sensitive to that change: moving the correct label from first to second cuts its contribution from 1 to 0.5.
+
+The validation comparison also measured rankings before the final class-prior adjustment, while Kaggle scored the rankings after that adjustment. The public score alone cannot identify which predictions changed for the worse. Overall, Notebook 6’s original ranking held up better on the public split.
 ## 1. Baseline Exploration, Feature Selection & SVM Optimization (`svm-optimisation (2).ipynb`)
 
 ### Objective
