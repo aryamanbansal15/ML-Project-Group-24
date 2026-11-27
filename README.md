@@ -228,3 +228,92 @@ The Fisher-vector blend improved validation MAP@3 on every seed. On the public l
 ### Output
 
 With the P4 competition dataset attached on Kaggle, the notebook writes `/kaggle/working/submission.csv` with ranked predictions for all **1,592 test recordings**.
+
+## 1. Baseline Exploration, Feature Selection & SVM Optimization (`svm-optimisation (2).ipynb`)
+
+### Objective
+Establish a leak-free, verified-only cross-validation benchmark, systematically compare classical ML families, engineer and ablate recording-level audio features, and test naive pseudo-labeling before building a first ensemble submission.
+
+### Pipeline & Key Experiments
+- **Data Audit**: Verified zero missing values, zero duplicate IDs, exact 1-to-1 CSV/WAV alignment across all 5,604 train and 1,592 test files, and uniform 22,050 Hz mono PCM-16 format.
+- **Model Comparison (75 baseline features, 5-fold Stratified CV, Seed 42)**:
+  - RBF SVM (`C=3.0`): `0.6661` (best single family)
+  - Random Forest: `0.6473` | Logistic Regression: `0.6470` | Extra Trees: `0.6441`
+- **Feature Ablation**: Adding 14 spectral contrast features (mean/std) boosted RBF SVM from `0.6707` (75 features) to `0.6909` (89 features), whereas adding MFCC delta (`0.6398`) and delta-2 (`0.6422`) degraded performance on the small verified-only set.
+- **Hyperparameter Tuning (89 features)**:
+  - Fine-grained RBF SVM grid search over `C`, `gamma`, and `class_weight` improved 3-seed mean MAP@3 from `0.6847` (`C=3, gamma="scale"`) to `0.6950` (`C=20, gamma=0.005618, class_weight="balanced"`), peaking at `0.7008` on Seed 42 and `0.7022` on Seed 123.
+  - Gradient boosting baselines on verified-only 89 features scored `0.6497` (XGBoost) and `0.6511` (CatBoost).
+- **Controlled Pseudo-Labeling Check**: Adding high-confidence (`>= 0.40`) single-model pseudo-labels from unchecked clips slightly hurt on 89 features (`0.6911` vs. `0.6944` verified-only), so unchecked labels were excluded from this submission.
+
+### Final Submission Configuration & Validation
+- **Features**: 89 verified recording-level features (75 baseline + 14 spectral contrast).
+- **Ensemble**: Weighted probability average — **40% RBF SVM (`C=20, gamma=0.005618`) + 10% Logistic Regression + 30% Random Forest + 20% Extra Trees**.
+- **3-Seed OOF MAP@3**: Seed 42 = `0.72634` | Seed 2026 = `0.71022` | Seed 31415 = `0.72608` | **Mean = `0.72088`**.
+
+---
+
+## 2. Acoustic Modulation & Fisher Vectors (`notebook3cb95cbbfb (2).ipynb`)
+
+### Objective
+Unlock the 4,984 unchecked training recordings safely via two-stage agreement filtering and move beyond clip-level averages by modeling short-window spectral events (BoAW, VLAD, Fisher vectors) and temporal modulation/inter-band correlation structure.
+
+### Pipeline & Architecture
+- **Recording-Level Features (`Frich`, 319 dims)**: Extends the 89 base+contrast features with active-frame 40-band log-mel statistics (mean, std, 90th percentile, max), active MFCC stats, MFCC delta std, spectral flatness, onset strength and onset rate, log-RMS percentiles, activity ratio, and log-duration.
+- **Short-Window Representations (2 temporal scales: 8 & 32 frames, ~0.1s & ~0.4s)**:
+  - **BoAW (192 dims)**: 96-cluster `MiniBatchKMeans` per scale with 3-NN inverse-distance soft voting and square-root normalization.
+  - **VLAD Residual (precomputed linear kernel)**: 32-cluster intra-normalized, signed power-normalized, L2-normalized residuals.
+  - **Fisher Vectors (precomputed linear kernel)**: `PCA(24, whiten=True)` + 32-component diagonal `GaussianMixture`, signed power-normalized and L2-normalized.
+- **Acoustic Modulation & Band-Correlation (`modulation_v1`, 468 dims)**: 24-band Mel energy envelope mean/std, 276 upper-triangle inter-band correlations, and periodogram power integrated across 6 modulation frequency bands (`0.5–50 Hz`).
+- **Two-Stage Noisy-Label Filtering**: A verified-only Stage-1 `Frich` ensemble scores the 4,984 unchecked clips; clips whose given label ranks #1 (`max_rank=1`) receive weight `0.5` (non-matching clips get `0.08` in BoAW/VLAD/Fisher SVMs and are dropped in `Frich` and `modulation`).
+- **Blending & Post-Processing**: Fixed blend (`80%` reference ensemble of `Frich` + BoAW SVM + VLAD SVM + Fisher SVM + `20%` Modulation RBF-SVM), followed by temperature sharpening and Saerens EM prior adjustment (`power=0.5`).
+
+### Validation Results (Paired 2-Seed 5-Fold CV)
+- **Reference Ensemble (without modulation)**: Seed 42 = `0.82823` | Seed 913 = `0.83145` (**Mean = `0.82984`**).
+- **With Acoustic Modulation (+20% weight)**:
+  - Seed 42: raw gain `+0.01022` (**`0.83845`**), adjusted gain `+0.00887`.
+  - Seed 913: raw gain `+0.00887` (**`0.84032`**), adjusted gain `+0.00995`.
+  - **Mean Raw OOF MAP@3 = `0.83938`** (passed the `>= +0.005` adjusted-gain gate on both seeds).
+
+---
+
+## 3. Fast 4-Core Parallel Multi-Kernel, CQT-Fisher, Dual-Teacher EM & Graph Diffusion (`notebooked58be53fd.ipynb`)
+
+### Objective
+Maximize MAP@3 within strict classical-ML rules by introducing orthogonal pitch/harmonic representations (CQT), cross-view multi-kernel learning, dual-teacher EM noisy-label cleaning, broader model diversity (gradient boosting, shrinkage LDA, direct softmax), exact class-mass balancing, and cross-fitted stacking with 4-core CPU parallelization.
+
+### Pipeline & Key Upgrades
+- **Expanded Multi-View Audio Features**:
+  - `Frich_v2_fast` (**515 dims**): Adds fast 40-band Mel-domain HPSS (global and 4-band harmonic/percussive ratios & centroids), MFCC delta/delta-2 quantiles, log-mel temporal deltas, 3-segment temporal energy envelope, crest factor, clipping fraction, spectral flux, and Tonnetz.
+  - **Activity-Masked 3-Scale Mel Patches (`8, 24, 64` frames)**: Filters silent windows (`< max - 45 dB`) to mitigate the 8.16s unchecked vs. 5.49s test duration mismatch; encodes 128-cluster BoAW (`384` dims), 32-cluster PCA(48)-VLAD (`4,608` dims), and 48-component GMM Fisher vectors over PCA(32) (`9,216` dims).
+  - **Orthogonal Constant-Q Transform (`CQT`, 60 bins / 5 octaves)**: CQT Fisher vectors (`40` GMMs × `28` PCA dims) + `180` clip-level CQT stats.
+  - `Modulation_v2` (**540 dims**): Silence-trimmed envelope correlations and periodograms plus per-band skewness, excess kurtosis, and slow/fast modulation ratios.
+  - **Positive-Definite Fused Multi-Kernel (`7196 × 7196`)**: Weighted unit-diagonal composite kernel combining Fisher (`0.26`), `Frich_v2` RBF (`0.18`), VLAD (`0.16`), CQT Fisher (`0.14`), `Modulation_v2` RBF (`0.14`), and BoAW RBF (`0.12`).
+- **Dual-Teacher EM Noisy-Label Cleaning & Exact Class Balancing**:
+  - Combines a 5-view verified-only Stage-1 teacher (OOF MAP@3: `0.78763` Seed 42, `0.79382` Seed 913) with a leak-free 5-fold OOF unchecked-set linear teacher (`0.696` top-1 agreement) via `em_noise` for continuous reliability weights (~4,860–4,898 kept, ~36–54 high-confidence relabeled per fold).
+  - Applies exact effective-weight class balancing (`alpha=1.0`) so all 41 classes carry equal training mass.
+- **11-Model Diverse Ensemble (10-Fold OOF Plain MAP@3)**:
+
+| Model | Seed 42 | Seed 913 | Mean MAP@3 | Learned Stack Weight |
+| :--- | :---: | :---: | :---: | :---: |
+| **`fused_mkl`** (6-view Composite Kernel SVM) | `0.83306` | `0.83172` | **`0.83239`** | `0.2191` |
+| **`lgbm_dense`** (LightGBM on 1,619 dense features) | `0.81075` | `0.80538` | **`0.80806`** | `0.2296` |
+| **`frich_ens`** (SVM3 + SVM10 + LR + RF + ET) | `0.80511` | `0.80484` | **`0.80497`** | `0.1020` |
+| **`lda_dense`** (Shrinkage LDA, uniform prior) | `0.79973` | `0.80081` | **`0.80027`** | `0.0899` |
+| **`fv_logreg`** (L2 Softmax on PCA-512 joint FV+VLAD+CQT) | `0.79543` | `0.79731` | **`0.79637`** | `0.2595` |
+| **`fisher_svm`** (3-scale Mel Fisher linear SVM) | `0.78306` | `0.78602` | **`0.78454`** | `0.0857` |
+| **`vlad_svm`** (3-scale Mel PCA-VLAD linear SVM) | `0.75108` | `0.75349` | `0.75228` | `0.0000` |
+| **`xgb_dense`** (XGBoost `hist` on PCA-256 dense) | `0.74409` | `0.74866` | `0.74637` | `0.0000` |
+| **`mod_svm`** (Active-trimmed `Modulation_v2` RBF SVM) | `0.74382` | `0.73548` | `0.73965` | `0.0141` |
+| **`boaw_svm`** (3-scale Mel BoAW RBF SVM) | `0.64785` | `0.65699` | `0.65242` | `0.0000` |
+| **`cqt_svm`** (CQT Fisher linear SVM) | `0.62903` | `0.62930` | `0.62917` | `0.0000` |
+
+- **Cross-Fitted Stacking, Post-Processing & Bagging**:
+  - Cross-fitted per-model temperature calibration + L2-regularized NLL optimization (SLSQP) over simplex weights and arithmetic/geometric mixing (`lambda = 0.850`, ensemble temp `1.145`).
+  - Acoustic k-NN graph label propagation (`alpha` grid `0.0–0.20`) and EM prior power (`0.0–1.0`) were both validated strictly on CV; CV automatically selected `alpha = 0.0` and `power = 0.0` (consistent with exact uniform class balancing).
+  - Final test predictions blend **50% 10-fold CV-bagged probabilities + 50% full-data retrained probabilities**, predicting all **41/41** unique top-1 classes cleanly (min 10, max 106 per class).
+
+### Final Validation Results
+- **Plain OOF MAP@3**: Seed 42 = **`0.84570`** | Seed 913 = **`0.84032`** (**Mean = `0.84301`**)
+- **Target-Weighted (`w_cal`) MAP@3**: Seed 42 = **`0.89134`** | Seed 913 = **`0.87939`**
+- **Uniform-Weighted (`u_cal`) MAP@3**: Seed 42 = **`0.86004`** | Seed 913 = **`0.85436`**
+- **Combined 3-Metric CV Score**: **`0.86186`**
