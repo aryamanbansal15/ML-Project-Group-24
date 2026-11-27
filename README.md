@@ -1,6 +1,10 @@
 # Listening Past the Noise
 ### Audio Classification Under Noisy Labels
 
+### INDIVIDUAL CONTRIBUTION
+
+AASTHA NAGARKOTI (2024013) : SUBMISSION1, notebook-3.ipynb,SUBMISSION5:Notebook 4 Updated — Spectral Residual Blend, Notebook 6 — Fisher Vector Audio Classification, NOTEBOOK 7
+
 ## Project Overview
 
 This project is based on Problem Statement 4 of the Machine Learning course project, *Listening Past the Noise*.
