@@ -357,3 +357,142 @@ Maximize MAP@3 within strict classical-ML rules by introducing orthogonal pitch/
 - **Target-Weighted (`w_cal`) MAP@3**: Seed 42 = **`0.89134`** | Seed 913 = **`0.87939`**
 - **Uniform-Weighted (`u_cal`) MAP@3**: Seed 42 = **`0.86004`** | Seed 913 = **`0.85436`**
 - **Combined 3-Metric CV Score**: **`0.86186`**
+
+
+### Submission 3 — 77-Feature Tuned 4-Model Ensemble (`SUBMISSIONS/Submission 3.ipynb`) — Pranav Sethi (2024425)
+
+#### Objective
+Improve upon the 89-feature verified-only baseline (`0.72088` CV / `0.69479` LB) through systematic MFCC dimensionality ablation, SVM hyperparameter optimization, classical model benchmarking, and controlled pseudo-labeling checks.
+
+#### Pipeline & Experiments Tested
+- **Features (77 dims):** 14 MFCCs (mean/std, 28), 12-bin Chroma STFT (mean/std, 24), spectral centroid/bandwidth/rolloff/ZCR/RMS (mean/std) + duration (11), and 7-band spectral contrast (mean/std, 14).
+- **Ablations Run (3-seed 5-fold CV, seeds `42, 2026, 31415`):**
+  - MFCC sweep (`13, 14, 20, 30, 40` coefficients) and feature additions (spectral flatness, 32 mel bands) showed `n_mfcc=14` (`77` dims) reduced variance over `n_mfcc=20` (`89` dims).
+  - Model benchmarks on verified-only clips: tuned RBF-SVM (`C=5.0, gamma=0.01, balanced`) = `0.6963`, CatBoost = `0.6841`, Cosine k-NN (`k=11`) = `0.6188`, LightGBM = `0.5898`.
+  - Single-model agreement and confidence filtering on unchecked clips (`threshold = 0.40–0.80`) did not beat verified-only (`0.73029` vs `0.73154`), so unchecked clips were excluded here.
+- **Final Ensemble (620 verified recordings):** `40%` RBF-SVM (`C=5.0, gamma=0.01, balanced`) + `30%` Random Forest (`500` trees) + `20%` Extra Trees (`500` trees) + `10%` Logistic Regression (`C=1.0, balanced`).
+
+#### Validation & Leaderboard Results
+- **3-Seed OOF MAP@3:** Seed 42 = `0.73307` | Seed 2026 = `0.72016` | Seed 31415 = `0.74140` | **Mean = `0.73154` ± `0.00874`** (`+0.01066` over `0.72088` baseline).
+- **Kaggle Public LB:** **`0.69585`** (`+0.00106` over `0.69479` baseline).
+- **Takeaway:** Verified-only clip-level averages plateaued near `0.70` LB due to having only 10 verified samples for 34 of the 41 classes, motivating short-window local descriptors and semi-supervised unchecked utilization.
+
+---
+
+### Submission 8 — Full-Data Retraining + TPP + Dual Kernel (VLAD + PCA Fisher) (`SUBMISSIONS/submission 8.ipynb`) — Pranav Sethi (2024425)
+
+#### Objective
+Unlock the 4,984 unchecked recordings and combine clip-level rich features with multi-scale local temporal and spectral residual kernels while training final models on 100% of verified data.
+
+#### Changes from Submission 3 & Pipeline
+- **Expanded features (`319` dims):** Upgraded from 77 clip averages to 319 active-frame rich spectral descriptors (log-mel percentiles, MFCC deltas, flatness, onset rate, activity ratio).
+- **Multi-scale short-window views (`w = 8, 32` frames, `12 ms` hop, fit on unchecked audio):**
+  - **Temporal Pyramid Pooling (TPP, `768` dims):** Global + Start/Mid/End 3-segment histograms over 96-cluster `MiniBatchKMeans`.
+  - **VLAD Residual Kernel:** 32-cluster intra-normalized, signed power-normalized linear Gram matrix.
+  - **PCA-Whitened Fisher Kernel:** `PCA(24, whiten=True)` + 32-component diagonal `GaussianMixture` linear Gram matrix.
+- **Full-620 Retraining & Soft Unchecked Weighting:** Stage-1 `Rich` ensemble trained on all 620 verified clips selected top-1 agreeing unchecked clips (`weight = 0.50`, floor `0.08` for non-agreeing clips in VLAD/Fisher SVMs), avoiding 4-fold subsampling starvation on 10-sample classes.
+- **Blending & Calibration:** Compounding probability blend (`Rich + TPP + VLAD + PCA-Fisher`) followed by temperature sharpening (`T = 1.25`) and test-set EM prior adjustment (`pi^0.5`).
+
+#### Leaderboard Results
+- **Kaggle Public LB:** **`0.84353`** (**`+0.14768`** over Submission 3).
+- **Takeaway:** Leveraging unchecked recordings alongside compact PCA-Fisher + VLAD kernels and full-620 retraining drove a major jump in generalization.
+
+---
+
+### Submission 9 — 4-Stream Meta-Fusion with Graph Label Propagation (`SUBMISSIONS/submission 9.ipynb`) — Pranav Sethi (2024425)
+
+#### Objective
+Test whether graph-based Label Propagation (`k=15`), a higher-capacity 15,360-dim GMM-16 Fisher kernel, and SLSQP OOF meta-weight optimization could improve upon Submission 8.
+
+#### Changes from Submission 8 & Pipeline
+- **4-Stream Architecture (3-seed 5-fold CV, fold-averaged predictions):**
+  - Stream 1 (`48%`): 319-dim Rich 5-model ensemble (3-seed OOF `0.7769`).
+  - Stream 2 (`13%`): 768-dim TPP patch RBF-SVM (3-seed OOF `0.6761`).
+  - Stream 3 (`31%`): 15,360-dim 16-component un-PCA'd GMM Fisher Global linear SVM over all 4,984 unchecked clips.
+  - Stream 4 (`8%`): `LabelPropagation(kernel='knn', n_neighbors=15)` filtered Fisher linear SVM (3-seed OOF `0.7833`).
+- **Meta-Optimization & Calibration:** SLSQP weight optimization directly on OOF MAP@3 + `T = 2.0` + EM prior (`pi^0.5`).
+
+#### Leaderboard Results & Error Analysis
+- **Kaggle Public LB:** **`0.81047`** (`-0.03306` vs. Submission 8).
+- **Root-Cause Findings (Negative Result):**
+  1. Fitting `LabelPropagation` across all 620 verified labels before CV leaked validation labels into `keep_b`.
+  2. Dropping VLAD and expanding Fisher vectors to 15,360 un-PCA'd dimensions increased variance on 10-sample classes.
+  3. 5-fold CV averaging left rare classes with only 8 verified clips per model instead of 10.
+  4. SLSQP directly on discrete MAP@3 over 620 rows overfit the validation set.
+
+---
+
+### Submission 10 — 3-Stream CV-Ensemble (`SUBMISSIONS/submission 10.ipynb`) — Pranav Sethi (2024425)
+
+#### Objective
+Isolate the impact of removing Label Propagation leakage and SLSQP weight overfitting while keeping the 3-stream fold-averaged 15,360-dim Fisher setup.
+
+#### Changes from Submission 9 & Pipeline
+- Removed the leaky Graph Label Propagation stream (`Stream 4`) and SLSQP weight tuning.
+- Combined 3 fold-averaged streams across 3 seeds (`42, 2026, 913`) with clean fixed weights: `55%` 319-dim Rich + `10%` 768-dim TPP Patch SVM + `35%` 15,360-dim GMM-16 Fisher linear SVM, followed by `T = 2.0` and EM prior adjustment.
+
+#### Leaderboard Results & Takeaways
+- **Kaggle Public LB:** **`0.81540`** (`+0.00493` over Submission 9, `-0.02813` vs. Submission 8).
+- **Takeaway:** Removing Label Propagation leakage immediately improved LB generalization. Comparing Submissions 8 (`0.84353`), 9 (`0.81047`), and 10 (`0.81540`) confirmed that compact PCA-whitened Fisher + VLAD kernels and full-620 retraining are essential for rare classes.
+
+---
+
+### Submission 13 — Step 1: 7-Stream HPSS + 8-View MKL + Debiased-Likelihood EM (`Step1_HPSS_MKL_DebiasedEM.ipynb`) — Pranav Sethi (2024425)
+
+#### Objective
+Address the core acoustic and statistical bottlenecks identified across Submissions 3–10 and the team's `0.85161` benchmark: harmonic/percussive spectral superposition, lack of cross-view kernel interaction, distorted implicit class priors breaking naive EM, and missing verified-manifold anchoring.
+
+#### Changes from Submissions 8–10 (and 0.85161 Benchmark) & Pipeline
+- **Five-View Single-Pass Audio Extraction:**
+  - `Rich-319d` + **`HPSS-178d`** (active `>-20 dB` + top-20% energy harmonic/percussive MFCCs, centroids, flatness, energy ratios; `+1.05%` plain / `+1.30%` unif standalone gain over `Frich + Mod_v1`).
+  - `Mod_v1-468d` (10 ms hop 24-band modulation & cross-band correlation).
+  - Standard 40-mel patches (`w = 8, 32`) -> BoAW (`192d`), VLAD (`7,680d`), PCA-24 GMM-32 Fisher (`3,072d`).
+  - **HPSS-Dual 24+24-mel patches (`w = 8, 32`)** -> BoAW (`192d`), VLAD (`9,216d`), and **2-seed bagged PCA-32 GMM-40 Fisher (`5,120d`)** (`+4.72%` plain / `+6.17%` unif standalone over standard Fisher).
+- **Prior-Debiased 6-View Stage-1 Teacher:** Verified-only teacher (`0.8115` OOF plain MAP@3 vs. `0.7546` for `Frich`-only) debiased by fold-internal uniform-weighted OOF marginals before top-1 agreement (`~48%` kept at `0.50`, floor `0.08`).
+- **7-Stream Classical Ensemble (Full-620 + 4,984 Unchecked Retraining):**
+  - `mkl` (`28%`): 8-View Joint Multi-Kernel SVM (`HPSS-FV`, `Std-FV`, `HPSS-VLAD`, `Std-VLAD`, `BoAW`, `Rich`, `HPSS-178`, `Mod_v1`).
+  - `jlr` (`18%`): L2 Multinomial Logistic Regression on concatenated unit-norm `[FV_H1, FV_H2, FV_S, VLAD_H, VLAD_S]` (globally convex, zero Platt noise).
+  - `hpss_k` (`15%`) & `std_k` (`10%`): Dedicated HPSS and Standard Log-Mel kernel SVMs.
+  - `tab` (`12%`): 497-dim `[Rich + HPSS]` 5-model balanced ensemble (`SVM3 + SVM10 + LR + RF + ET`).
+  - `mod` (`10%`): 50% keep-only + 50% all-unchecked modulation SVM.
+  - `knn` (`7%`): Class-balanced Verified `16-NN` in 8-View MKL kernel space (anchors predictions to the verified recording distribution, which matches test at adversarial AUC `0.5077`).
+- **Exact Debiased-Likelihood EM Calibration:** Divides out the empirical uniform-weighted 3-seed OOF class marginal `pi_src` before temperature scaling (`T = 1.90`) and damped Saerens EM (`power = 0.50`), fixing naive EM's `-1.1%` to `-1.5%` distortion.
+
+#### Validation Results (3-Seed 5-Fold Stratified CV, Seeds `42, 913, 2026`)
+| Metric | Seed 42 | Seed 913 | Seed 2026 | **3-Seed Mean** |
+| :--- | :---: | :---: | :---: | :---: |
+| Plain OOF MAP@3 | `0.8766` | `0.8712` | `0.8688` | **`0.87222`** |
+| Uniform-Weighted OOF MAP@3 | `0.8927` | `0.8870` | `0.8846` | **`0.88808`** |
+| Train-Total Weighted OOF MAP@3 | — | — | — | **`0.90152`** |
+| `v10` / `v40` OOF MAP@3 | — | — | — | **`0.89771` / `0.84127`** |
+
+- **Simulated Test-Prior Shift (`DebiasEM 0.50`):** Uniform = `0.88464`, Train-Total = `0.89798`, Skewed (`C05=10%`) = `0.88340` (`+4.95%` to `+6.26%` over `Highest_Score.ipynb`'s naive EM).
+
+---
+
+### Submission 14 — Step 2B: 9-Stream HPSS-Modulation + Shrunk LDA & Decoupled Train/Inference Pipeline (`SUBMISSIONS/notebook-score0-883.ipynb`, `Step2B_Train_SaveArtifacts.ipynb` + `Step2B_Inference_Only.ipynb`) — Pranav Sethi (2024425)
+
+#### Objective
+Test Step 2 candidate expansions (`Mod_HPSS-512d`, CatBoost, LightGBM, and Shrunk LDA) against Submission 13 on the exact same 3-seed CV splits, promote only components that beat Submission 13 across CV and simulated test-prior shift, and split the winning pipeline into offline artifact training + fast inference-only notebooks for private-test evaluation.
+
+#### Changes from Submission 13 & Pipeline
+- **Added 2 Validated Streams (Zero Extra HPSS Extraction Cost):**
+  - **`mod_hpss` (`9%`, `Mod_HPSS-512d`):** Harmonic + percussive modulation spectrum and cross-band correlation SVM, computed directly from the `S1_h, S1_p` spectrograms already produced for HPSS patches (`+3.95%` plain / `+4.02%` unif standalone over `Mod_v1`).
+  - **`lda` (`4%`):** Shrunk LDA (`solver='lsqr', shrinkage='auto'`) on 497-dim `[Rich + HPSS]` (~1 s/fold generative Gaussian diversity).
+- **Controlled Pruning (Step 2 Gate):** Tested and explicitly rejected CatBoost (`-0.0019` unif) and LightGBM (`-0.0021` unif), which added +35–40 min CPU time while regressing `unif`, `w_tot`, and simulated test-prior shift.
+- **Final 9-Stream Weights:** `mkl 25%`, `jlr 16%`, `hpss_k 14%`, `std_k 9%`, `tab 11%`, `mod 5%`, `mod_hpss 9%`, `lda 4%`, `knn 7%`.
+- **Decoupled Train/Inference Split (Private-Test Ready):**
+  - `Step2B_Train_SaveArtifacts.ipynb` trains exclusively on the 5,604 training recordings (training-only medians & BoAW gammas) and exports `797.6 MB` to `/kaggle/working/step2b_artifacts/` (`meta_and_encoders.joblib`: `0.3 MB`, `models.joblib`: `107.6 MB`, `train_refs.npz`: `689.7 MB`).
+  - `Step2B_Inference_Only.ipynb` loads those artifacts, extracts features only for test audio with identical extraction code, drops any hardcoded `1592` test-length check, and generates `/kaggle/working/submission.csv` in `~10 min` on Kaggle 4-core CPU (down from `~84 min` full end-to-end training), with `99.81%` top-1 parity (`1,589 / 1,592`) and `41/41` classes represented.
+
+#### Validation & Leaderboard Results (3-Seed 5-Fold Stratified CV on Kaggle)
+| Metric | Seed 42 | Seed 913 | Seed 2026 | **3-Seed Mean** |
+| :--- | :---: | :---: | :---: | :---: |
+| Plain OOF MAP@3 | `0.87876` | `0.87177` | `0.87473` | **`0.87509`** |
+| Uniform-Weighted OOF MAP@3 | `0.89502` | `0.88994` | `0.89014` | **`0.89170`** |
+| Train-Total Weighted OOF MAP@3 | `0.90689` | `0.90377` | `0.90106` | **`0.90390`** |
+| `v10` (34 classes, 10 verified) | `0.90490` | `0.90098` | `0.89951` | **`0.90180`** |
+| `v40` (7 classes, 40 verified) | `0.84702` | `0.83631` | `0.84464` | **`0.84266`** |
+| **Kaggle Public Leaderboard** | — | — | — | **`0.883`** |
+
+- **Gain:** Beat Submission 13 across every CV metric and every simulated test-prior shift regime (`Uniform 0.88692`, `Train-Total 0.89898`, `Skewed 0.88760`), reaching **`0.883`** on Kaggle Public LB (`+0.0395` over Submission 8, `+0.0676` over Submission 10, and `+0.0314` over the team's previous `0.85161` benchmark).
